@@ -1,3 +1,11 @@
+
+# the issue: The agent shows prompt brittleness and poor semantic generalization. 
+# It can answer narrowly phrased queries like “what do you know about me,” but fails or stalls on paraphrased intents such as “tell me my preferences.” 
+# This indicates shallow intent matching and lack of paraphrase robustness in memory retrieval or tool invocation, rather than true intent abstraction.
+
+## todo next: refine it. when it runs the app. run it, remove duplicate logs and operations. remove the errors
+
+
 #!/usr/bin/env python3
 """
 # 🧠 Memory Agent
@@ -64,6 +72,7 @@ load_dotenv()
 # Set AWS credentials and configuration
 # os.environ["AWS_REGION"] = "us-west-2"
 # os.environ['OPENSEARCH_HOST'] = "your-opensearch-host.us-west-2.aoss.amazonaws.com"
+## todo azarboon: remove OPENSEARCH_HOST because its not used anywhere in the code
 # os.environ['AWS_ACCESS_KEY_ID'] = "your-aws-access-key-id"
 # os.environ['AWS_SECRET_ACCESS_KEY'] = "your-aws-secret-access-key"
 
@@ -77,8 +86,12 @@ load_dotenv()
 # os.environ['NEPTUNE_ANALYTICS_GRAPH_IDENTIFIER'] = "g-sample-graph-id"
 USER_ID = "mem0_user"
 
+# todo azarboon: optionally add the memo stores it on device but can be confiured to store remotely (if thats the case)
+
+
+
 # System prompt for the memory agent
-MEMORY_SYSTEM_PROMPT = f"""You are a personal assistant that maintains context by remembering user details.
+MEMORY_SYSTEM_PROMPT = f"""You are a personal assistant that maintains context by remembering user details. 
 
 Capabilities:
 - Store new information using mem0_memory tool (action="store")
@@ -93,10 +106,17 @@ Key Rules:
 - Acknowledge stored information
 - Only share relevant information
 - Politely indicate when information is unavailable
+
+Hard rules (non-optional):
+- For every user message, you MUST retrieve relevant memories using mem0_memory with action="retrieve" and user_id=USER_ID before responding.
+- You MUST do this even if the user input is short, conversational, or differs only by punctuation.
+- Never answer questions about the user without retrieving memory first.
 """
+## todo azarboon: added the above hard rules to the prompt.
 
 # Create an agent with memory capabilities
 memory_agent = Agent(
+    model="amazon.nova-lite-v1:0",
     system_prompt=MEMORY_SYSTEM_PROMPT,
     tools=[mem0_memory, use_llm],
 )
@@ -121,25 +141,71 @@ if __name__ == "__main__":
     print("  - What are my travel preferences?")
     print("  - Do I have any pets?")
 
-    # Interactive loop
+
+## todo azarboon: updated these but requires further refining due to duplication of logs (and possibly actions)
+def is_preference_statement(text: str) -> bool:
+    lowered = text.lower().strip()
+    return lowered.startswith((
+        "i prefer",
+        "i like",
+        "i love",
+        "i plan",
+        "i want",
+        "i usually",
+    ))
+
+
+if __name__ == "__main__":
+    print("\n🧠 Memory Agent 🧠\n")
+
     while True:
         try:
             user_input = input("\n> ")
 
             if user_input.lower() == "exit":
-                print("\nGoodbye! 👋")
+                print("\nGoodbye!")
                 break
+
             elif user_input.lower() == "demo":
                 initialize_demo_memories()
                 print("\nDemo memories initialized!")
                 continue
 
-            # Call the memory agent
-            memory_agent(user_input)
+            if is_preference_statement(user_input):
+                memory_agent.tool.mem0_memory(
+                    action="store",
+                    content=user_input,
+                    user_id=USER_ID,
+                )
+
+            retrieved = memory_agent.tool.mem0_memory(
+                action="retrieve",
+                query="user preferences and personal facts",
+                user_id=USER_ID,
+            )
+
+            memory_text = ""
+            if isinstance(retrieved, dict):
+                for m in retrieved.get("memories", []):
+                    content = m.get("content")
+                    if content:
+                        memory_text += "- " + content + "\n"
+
+            if memory_text.strip():
+                final_input = (
+                    "Known user information:\n"
+                    f"{memory_text}\n"
+                    "User message:\n"
+                    f"{user_input}"
+                )
+            else:
+                final_input = user_input
+
+            memory_agent(final_input)
 
         except KeyboardInterrupt:
             print("\n\nExecution interrupted. Exiting...")
             break
+
         except Exception as e:
             print(f"\nAn error occurred: {str(e)}")
-            print("Please try a different request.")
